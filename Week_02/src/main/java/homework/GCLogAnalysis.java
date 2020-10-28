@@ -30,7 +30,7 @@ public class GCLogAnalysis {
                 cachedGarbage[randomIndex] = garbage;
             }
         }
-        System.out.println("---执行结束，生成对象总个数：" + counter.longValue());
+        System.out.println("执行结束，生成对象总个数：" + counter.longValue());
     }
 
     // 生成对象
