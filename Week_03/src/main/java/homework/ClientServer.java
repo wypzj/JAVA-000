@@ -18,7 +18,7 @@ import java.io.IOException;
 public class ClientServer {
     public static void main(String[] args) {
         CloseableHttpClient client = HttpClientBuilder.create().build();
-        HttpGet httpGet = new HttpGet("http://127.0.0.1:8808/test");
+        HttpGet httpGet = new HttpGet("http://127.0.0.1:8888/test");
         CloseableHttpResponse httpResponse = null;
         try {
             httpResponse = client.execute(httpGet);
