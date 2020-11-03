@@ -1,27 +1,25 @@
 package homework.gateway.outbound.httpclient4;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
+import homework.gateway.filter.HttpRequestFilter;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.FullHttpResponse;
-import io.netty.handler.codec.http.HttpMethod;
-import org.apache.http.HttpResponse;
-import org.apache.http.client.HttpClient;
+import io.netty.handler.codec.http.*;
+import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.util.EntityUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.io.InputStream;
+import java.util.Iterator;
+import java.util.Map;
 
-import static io.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
+import static io.netty.handler.codec.http.HttpResponseStatus.GATEWAY_TIMEOUT;
 import static io.netty.handler.codec.http.HttpResponseStatus.OK;
-import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
+import static org.apache.http.HttpHeaders.CONTENT_LENGTH;
+import static org.apache.http.HttpHeaders.CONTENT_TYPE;
 
 /**
  * @author wyp
@@ -34,12 +32,17 @@ public class AsyncHttpOutboundHandler extends AbstractHttpOutboundHandler {
     Logger logger = LoggerFactory.getLogger(AsyncHttpOutboundHandler.class);
     private String backendUrl;
     private CloseableHttpClient httpClient;
+    private HttpRequestFilter httpRequestFilter;
 
     public AsyncHttpOutboundHandler(String backendUrl) {
         //TODO backendUrl不应该只有一个
         this.backendUrl = backendUrl;
         //TODO httpClient暂不调优
         this.httpClient = HttpClientBuilder.create().build();
+        this.httpRequestFilter = (fullRequest, ctx) -> {
+            HttpHeaders headers = fullRequest.headers();
+            headers.add("nio", "jim");
+        };
     }
 
     @Override
@@ -51,48 +54,56 @@ public class AsyncHttpOutboundHandler extends AbstractHttpOutboundHandler {
             //线程池发送request
             executorService.execute(() -> {
                 logger.info("网关AsyncHttpOutboundHandler，url：{}", trueUrl);
-                HttpResponse httpResponse = null;
+                this.httpRequestFilter.filter(fullRequest, ctx);
+                CloseableHttpResponse httpResponse = null;
                 try {
+                    HttpHeaders headers = fullRequest.headers();
+                    Iterator<Map.Entry<String, String>> entryIterator = headers.iteratorAsString();
+                    if (entryIterator.hasNext()) {
+                        httpGet.setHeader(entryIterator.next().getKey(), entryIterator.next().getValue());
+                    }
                     httpResponse = httpClient.execute(httpGet);
+
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
                 //处理response
-                handleResponse(fullRequest, ctx, httpResponse);
+                try {
+                    handleResponse(fullRequest, ctx, httpResponse);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+
             });
         } else {
             logger.error("本网关只支持get请求");
         }
     }
 
-    private void handleResponse(FullHttpRequest fullRequest, ChannelHandlerContext ctx, HttpResponse httpResponse) {
+    private void handleResponse(FullHttpRequest fullRequest, ChannelHandlerContext ctx, CloseableHttpResponse httpResponse) throws IOException {
+        logger.info("response 处理");
         FullHttpResponse response = null;
-        ByteBuf buffer = ByteBufAllocator.DEFAULT.buffer();
         try {
             if (httpResponse == null) {
-                response = new DefaultFullHttpResponse(HTTP_1_1, NOT_FOUND, ByteBufAllocator.DEFAULT.buffer());
-                response.headers().set("Content-Type", "application/json");
+                logger.info("response为null");
+                response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, GATEWAY_TIMEOUT, Unpooled.wrappedBuffer(new byte[0]));
             } else {
-                InputStream content = httpResponse.getEntity().getContent();
-                byte[] bytes = new byte[content.available()];
-                if (content.read(bytes) != 0){
-                    logger.info("uuuuu:{}", new String(bytes));
-                }
-                //TODO 这里available获取到的不一定是完整的流的大小，需要优化
-                buffer.setBytes(0,bytes);
-                //logger.info("content:{}", buffer.readBytes(buffer.readableBytes()));
-                response = new DefaultFullHttpResponse(HTTP_1_1, OK, buffer);
-                response.headers().set("Content-Type", "application/json");
-                response.headers().set("Content-Length", Integer.parseInt(httpResponse.getFirstHeader("Content-Length").getValue()));
-                if (content != null){
-                    content.close();
+                byte[] bytes = EntityUtils.toByteArray(httpResponse.getEntity());
+                logger.info("bytes size:{}", bytes.length);
+                response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, OK, Unpooled.wrappedBuffer(bytes));
+                response.headers().set(CONTENT_TYPE, httpResponse.getFirstHeader(CONTENT_TYPE));
+                response.headers().setInt(CONTENT_LENGTH, Integer.parseInt(httpResponse.getFirstHeader(CONTENT_LENGTH).getValue()));
+            }
+
+        } finally {
+            if (httpResponse != null) {
+                try {
+                    logger.info("close httpResponse");
+                    httpResponse.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
                 }
             }
-        } catch (IOException e) {
-            e.printStackTrace();
-            //异常处理
-            ctx.close();
-        } finally {
             ctx.writeAndFlush(response);
         }
     }
